@@ -1,17 +1,17 @@
-#Change Below
-$DriveLetter = 'O' #Change to the Drive you wish to use
-$DriveRoot = 'StorageAccount.file.core.windows.net' #Change to yours StorageAccount
-$DriveShare = '\o-drive-test' #Change to your Share Drive in AFS
-$CMDKey = cmd.exe /C cmdkey /add:$DriveRoot /user:localhost\StorageAccount /pass: #Change StorageAccount to your StorageAccount Name and add the Pass key
-$TenantName = "" #Change to your Azure Tenancy Name
-$TenantID = "" #Change to your Azure Tenancy ID
-#End of Change
+#Change Variables Below
+$companyname = " " #This is where you'll put your Azure Company Name.
+$TenantId = " " #This is where you'll put your Azure Tenancy ID.
+$DriveLetter = ' ' #This is where you'll select your drive letter.
+$DriveRoot = 'StorageAccount.file.core.windows.net'
+$DriveFolder = '\folder'
+$CMDKey = "cmd.exe /C `cmdkey /add:`"StorageAccount.file.core.windows.net`" /user:`"localhost\StorageAccount`" /pass:`"password`"`"
 
-#Variables for later, no need to change
+
+#Variables for later - Nothing to change
 $ConnectAFSDriveTask = "ConnectAzureFileShare_" + $DriveLetter
 $DriveDir = $DriveRoot + $DriveShare
 $DriveLetterTotal = $DriveLetter + ':'
-$DriveRootConnection = '"\\' + $DriveDir + '"'
+$DriveRootConnection = '\\' + $DriveDir + $DriveFolder
 
 $1 = (dsregcmd /status | select-string "AzureAdJoined")
 $2 = (dsregcmd /status | select-string "TenantName")
@@ -23,12 +23,12 @@ function Test-Administrator {
     (New-Object Security.Principal.WindowsPrincipal $user).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 }
 
-if (($1 -match "YES") -and ($2 -match $TenantName) -and ($3 = $TenantID)) {
-    $CMDKey
+if (($1 -match "YES") -and ($2 -match $companyname) -and ($3 -match $TenantId)) {
+    write-host "Domain Verification Passed..."
 } else {
-    cmd.exe /c "cmdkey /delete:"$DriveRoot
+    cmd.exe /c "cmdkey /delete:$DriveRoot"
     net use $DriveLetterTotal /delete
-exit
+    exit
 }
 
 $ScriptDirectory = $env:APPDATA + "\Intune"
@@ -41,45 +41,60 @@ if (!(Get-Item -Path $ScriptDirectory)) {
 $ScriptLogFilePath = $ScriptDirectory + "\ConnectAzureFileShare.log"
 
 if (Test-Administrator) {
-    # If running as administrator, create scheduled task as current user.
     Add-Content -Path $ScriptLogFilePath -Value ((Get-Date).ToString() + ": " + "Running as administrator.")
+    $ScriptFilePath = Join-Path -Path $ScriptDirectory -ChildPath "ConnectAzureFileShare_$DriveLetter.ps1"
 
-    $ScriptFilePath = $ScriptDirectory + "\ConnectAzureFileShare_" + $DriveLetter + ".ps1"
+    $Script = @"
+`$driveInfo = Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue #Change
+    if (`$driveInfo.DisplayRoot -eq "$DriveRootConnection") { #Change
+        write-host "Connection already exists! Exiting."
+        exit
+    }
+$CMDKey
+`$TaskConnectTestResult = Test-NetConnection -ComputerName $DriveRoot -Port 445
+if (`$TaskConnectTestResult.TcpTestSucceeded) {
+    # Mount the drive
+    New-PSDrive -Name $DriveLetter -PSProvider FileSystem -Root "$DriveRootConnection" -Persist #Change
+} else {
+    Write-Error -Message "Unable to reach the Azure storage account via port 445. Check to make sure your organization or ISP is not blocking port 445, or use Azure P2S VPN, Azure S2S VPN, or Express Route to tunnel SMB traffic over a different port."
+}
+"@
 
-    $Script = '$connectTestResult' + " = Test-NetConnection -Computername $DriveRoot -Port 445
-         if ($connectTestResult.TcpTestSucceeded) {
-             net use $DriveLetterTotal $DriveRootConnection
-         } else {
-        Write-Error -Message 'Unable to reach the Azure storage account via port 445. Check to make sure your organization or ISP is not blocking port 445, or use Azure P2S VPN, Azure S2S VPN, or Express Route to tunnel SMB traffic over a different port.'
-    }"
+    $Script | Out-File -FilePath $ScriptFilePath -Encoding ASCII
 
-    $Script | Out-File -FilePath $ScriptFilePath
-
-    $PSexe = Join-Path $PSHOME "powershell.exe"
-    $Arguments = "-file $($ScriptFilePath) -WindowStyle Hidden -ExecutionPolicy Bypass"
-    $CurrentUser = (Get-CimInstance –ClassName Win32_ComputerSystem | Select-Object -expand UserName)
+    $PSexe = Join-Path $PSHOME powershell.exe
+    $Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File $ScriptFilePath"
     $Action = New-ScheduledTaskAction -Execute $PSexe -Argument $Arguments
-    $Principal = New-ScheduledTaskPrincipal -UserId (Get-CimInstance –ClassName Win32_ComputerSystem | Select-Object -expand UserName)
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+    $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
+    $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME
     $Task = New-ScheduledTask -Action $Action -Trigger $Trigger -Principal $Principal
 
-    Register-ScheduledTask $ConnectAFSDriveTask -Input $Task
-    Start-ScheduledTask $ConnectAFSDriveTask
-}
-
-Else {
+    Register-ScheduledTask -TaskName $ConnectAFSDriveTask -InputObject $Task -Force | Out-Null
+    Start-ScheduledTask -TaskName $ConnectAFSDriveTask | Out-Null
+    start-sleep -seconds 15
+    Unregister-ScheduledTask -TaskName "$ConnectAFSDriveTask" -Confirm:$false
+    start-sleep -seconds 1
+    Remove-Item -Path $ScriptFilePath
+} Else {
     # Not running as administrator. Connecting directly with Azure script.
     Add-Content -Path $ScriptLogFilePath -Value ((Get-Date).ToString() + ": " + "Not running as administrator.")
 
     $connectTestResult = Test-NetConnection -Computername $DriveRoot -Port 445
         if ($connectTestResult.TcpTestSucceeded) {
-            net use $DriveLetterTotal $DriveRootConnection
+            $driveInfo = Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue #Change
+            if ($driveInfo.DisplayRoot -eq "$DriveRootConnection") { #Change
+                write-host "Connection already exists! Exiting."
+                exit
+            } else {
+                Invoke-Expression -Command $CMDKey
+                net use $DriveLetterTotal $DriveRootConnection
+            }
         } else {
         Write-Error -Message "Unable to reach the Azure storage account via port 445. Check to make sure your organization or ISP is not blocking port 445, or use Azure P2S VPN, Azure S2S VPN, or Express Route to tunnel SMB traffic over a different port."
-    }
+      }
 }
 
-If (Get-PSDrive -Name O) {
+If (net use $DriveLetterTotal) {
     Add-Content -Path $ScriptLogFilePath -Value ((Get-Date).ToString() + ": " + $DriveLetter + "-Drive mapped successfully.")
 }
 
